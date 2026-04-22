@@ -27,3 +27,15 @@ Implementation of the [Hierarchical Latent Action Model](https://arxiv.org/abs/2
     url     = {https://arxiv.org/abs/2312.10812}, 
 }
 ```
+
+```bibtex
+@misc{hwang2025dynamicchunkingendtoendhierarchical,
+    title   = {Dynamic Chunking for End-to-End Hierarchical Sequence Modeling}, 
+    author  = {Sukjun Hwang and Brandon Wang and Albert Gu},
+    year    = {2025},
+    eprint  = {2507.07955},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG},
+    url     = {https://arxiv.org/abs/2507.07955}, 
+}
+```
