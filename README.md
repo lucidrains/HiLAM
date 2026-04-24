@@ -1,4 +1,6 @@
-## HiLAM
+<img src="./fig1.png" width="400px"></img>
+
+## HiLAM (wip)
 
 Implementation of the [Hierarchical Latent Action Model](https://arxiv.org/abs/2603.05815), proposed by Hanjung Kim et al. of Yonsei University
 
