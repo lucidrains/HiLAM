@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from torch import nn
+from torch import nn, cat
 import torch.nn.functional as F
 from torch.nn import Module, RMSNorm
 
@@ -134,6 +134,7 @@ class PolicyNetwork(Module):
 
         # is high level embed - give the network a hint which mode it is in
 
+        self.start_action_embed = nn.Parameter(torch.randn(dim) * 1e-2)
         self.is_high_level_embed = nn.Parameter(torch.randn(dim) * 1e-2)
 
     def forward(
@@ -143,14 +144,12 @@ class PolicyNetwork(Module):
         high_actions = None,
         return_pred_only = False
     ):
+        batch, seq_len = states.shape[:2]
 
-        if return_pred_only:
-            is_low_level_policy = exists(high_actions)
-        else:
-            is_low_level_policy = exists(actions)
-            assert exists(high_actions), 'high_actions must be passed during training for both high and low level policy'
+        is_low_level_policy = exists(high_actions) and exists(actions)
+        is_high_level_policy = exists(high_actions) and not exists(actions)
 
-        is_high_level_policy = not is_low_level_policy
+        assert is_low_level_policy or is_high_level_policy
 
         # video to embed - even pixel space is fine, as recent papers show
 
@@ -161,18 +160,35 @@ class PolicyNetwork(Module):
 
         embed = state_embed
 
-        # if training the low level policy, we now condition on the high level actions
-
-        if is_low_level_policy:
-            high_action_embed = self.higher_action_embed(high_actions)
-
-            embed = einx.add('b t ... d, b t d', embed, high_action_embed)
-        
         # let the network know if it is acting as low or high level policy
 
         if is_high_level_policy:
             embed = embed + self.is_high_level_embed
-            
+
+        # if training the low level policy, we now condition on the high level actions
+
+        high_action_embed = self.higher_action_embed(high_actions)
+
+        if is_low_level_policy:
+            embed = einx.add('b t ... d, b t d', embed, high_action_embed)
+
+        # take care of past actions
+
+        start_action_embed = repeat(self.start_action_embed, 'd -> b 1 d', b = batch)
+
+        if is_low_level_policy:
+            low_action_embed = self.low_action_embed(actions)
+            past_low_action_embed = cat((start_action_embed, low_action_embed), dim = 1)
+
+            past_action_embed = past_low_action_embed[:, :seq_len]
+
+        elif is_high_level_policy:
+            past_high_action_embed = cat((start_action_embed, high_action_embed), dim = 1)
+
+            past_action_embed = past_high_action_embed[:, :seq_len]
+
+        embed = einx.add('b t s d, b t d', embed, past_action_embed)
+
         # maybe pack spatial
 
         embed, inverse_pack_time = pack_with_inverse(embed, 'b * d') # assume time is always closest to batch (b t s d) if spatial dimension exists

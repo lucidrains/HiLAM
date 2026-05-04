@@ -124,13 +124,11 @@ def test_policy_e2e():
 
         # predict high level actions from states alone
 
-        high_logits = policy(states, return_pred_only = True)
-        predicted_high_actions = high_logits.argmax(dim = -1)
+        high_logits = policy(states, high_actions = interleaved_higher_actions, return_pred_only = True)
 
         # predict low level actions conditioned on predicted high level
 
-        low_logits = policy(states, high_actions = predicted_high_actions, return_pred_only = True)
-        predicted_low_actions = low_logits.argmax(dim = -1)
+        low_logits = policy(states, actions = actions, high_actions = interleaved_higher_actions, return_pred_only = True)
 
-    assert predicted_high_actions.shape == (2, 16)
-    assert predicted_low_actions.shape == (2, 16)
+    assert high_logits.shape[:2] == (2, 16)
+    assert low_logits.shape[:2] == (2, 16)
