@@ -1,3 +1,7 @@
-from HiLAM.HiLAM import HierarchicalLatentActionModel
+from HiLAM.HiLAM import (
+    HierarchicalLatentActionModel,
+    PolicyNetwork,
+    VideoToPatchTokens
+)
 
 HiLAM = HierarchicalLatentActionModel

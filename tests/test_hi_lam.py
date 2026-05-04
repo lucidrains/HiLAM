@@ -48,3 +48,89 @@ def test_hi_lam(discrete_high_level_actions):
     total_lens = higher_action_lens.clamp(min = 0).sum(dim = -1)
 
     assert (interleaved_higher_actions.shape[1] == total_lens).all()
+
+def test_policy_e2e():
+    from HiLAM.HiLAM import (
+        HierarchicalLatentActionModel,
+        PolicyNetwork,
+        VideoToPatchTokens
+    )
+    from x_transformers import Decoder
+
+    dim = 256
+    num_discrete_actions = 10
+    num_high_level_discrete = 16
+    patch_size = 8
+    img_size = 32
+
+    # patchify video frames
+
+    state_to_embed = VideoToPatchTokens(
+        dim = dim,
+        patch_size = patch_size,
+        channels = 3
+    )
+
+    # hi-lam for discovering hierarchical latent actions
+
+    hi_lam = HierarchicalLatentActionModel(
+        dim = dim,
+        h_net_head_depth = 1,
+        h_net_trunk_depth = 1,
+        h_net_tail_depth = 1,
+        actions_num_discrete = num_discrete_actions,
+        num_high_level_discrete = num_high_level_discrete,
+    )
+
+    # policy that acts at both levels
+
+    policy = PolicyNetwork(
+        dim = dim,
+        transformer = Decoder(dim = dim, depth = 2, heads = 4),
+        state_to_embed = state_to_embed,
+        actions_num_discrete = num_discrete_actions,
+        higher_actions_num_discrete = num_high_level_discrete,
+    )
+
+    # mock data
+
+    states = torch.randn(2, 16, 3, img_size, img_size)
+    actions = torch.randint(0, num_discrete_actions, (2, 16))
+
+    # 1. train hi-lam, obtain interleaved higher level actions
+
+    _, interleaved_higher_actions, _ = hi_lam(
+        states,
+        actions = actions,
+        return_actions_only = True,
+        return_batch_repeat_interleaved = True
+    )
+
+    # 2. train high level policy - predict higher actions from states
+
+    high_loss = policy(states, high_actions = interleaved_higher_actions)
+    high_loss.backward()
+
+    # 3. train low level policy - predict actions conditioned on higher actions
+
+    low_loss = policy(states, actions = actions, high_actions = interleaved_higher_actions)
+    low_loss.backward()
+
+    # 4. inference - first predict high level, then low level
+
+    policy.eval()
+
+    with torch.no_grad():
+
+        # predict high level actions from states alone
+
+        high_logits = policy(states, return_pred_only = True)
+        predicted_high_actions = high_logits.argmax(dim = -1)
+
+        # predict low level actions conditioned on predicted high level
+
+        low_logits = policy(states, high_actions = predicted_high_actions, return_pred_only = True)
+        predicted_low_actions = low_logits.argmax(dim = -1)
+
+    assert predicted_high_actions.shape == (2, 16)
+    assert predicted_low_actions.shape == (2, 16)

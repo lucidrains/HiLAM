@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
 import torch.nn.functional as F
 from torch.nn import Module, RMSNorm
 
@@ -12,7 +13,8 @@ from discrete_continuous_embed_readout import EmbedAndReadout
 from vector_quantize_pytorch import VectorQuantize
 
 import einx
-from einops import rearrange, repeat
+from einops import rearrange, repeat, reduce
+from einops.layers.torch import Rearrange
 from torch_einops_utils import lens_to_mask, pack_with_inverse, exclusive_cumsum
 
 # functions
@@ -22,6 +24,9 @@ def exists(v):
 
 def default(v, d):
     return v if exists(v) else d
+
+def divisible_by(num, den):
+    return (num % den) == 0
 
 # tensor related
 
@@ -81,6 +86,127 @@ def batch_repeat_interleave(
     )
 
     return output
+
+# video to patches
+
+def VideoToPatchTokens(dim, patch_size, channels = 3):
+    patch_dim = channels * patch_size ** 2
+
+    return nn.Sequential(
+        Rearrange('b t c (h p1) (w p2) -> b t (h w) (c p1 p2)', p1 = patch_size, p2 = patch_size),
+        nn.Linear(patch_dim, dim)
+    )
+
+# policy network
+
+class PolicyNetwork(Module):
+    def __init__(
+        self,
+        dim,
+        *,
+        transformer: Decoder,
+        state_to_embed: Module,
+        actions_num_discrete = 0,
+        actions_num_continuous = 0,
+        higher_actions_num_discrete = 0,
+        higher_actions_num_continuous = 0,
+    ):
+        super().__init__()
+
+        # states
+
+        self.state_to_embed = state_to_embed
+
+        # attention
+
+        self.transformer = transformer
+
+        # actions
+
+        assert (
+            (actions_num_discrete > 0 or actions_num_continuous > 0) and
+            (higher_actions_num_discrete > 0 or higher_actions_num_continuous > 0)
+        )
+
+        self.low_action_embed, self.low_action_readout = EmbedAndReadout(dim = dim, num_discrete = actions_num_discrete, num_continuous = actions_num_continuous)
+
+        self.higher_action_embed, self.higher_action_readout = EmbedAndReadout(dim = dim, num_discrete = higher_actions_num_discrete, num_continuous = higher_actions_num_continuous)
+
+        # is high level embed - give the network a hint which mode it is in
+
+        self.is_high_level_embed = nn.Parameter(torch.randn(dim) * 1e-2)
+
+    def forward(
+        self,
+        states,
+        actions = None,
+        high_actions = None,
+        return_pred_only = False
+    ):
+
+        if return_pred_only:
+            is_low_level_policy = exists(high_actions)
+        else:
+            is_low_level_policy = exists(actions)
+            assert exists(high_actions), 'high_actions must be passed during training for both high and low level policy'
+
+        is_high_level_policy = not is_low_level_policy
+
+        # video to embed - even pixel space is fine, as recent papers show
+
+        state_embed = self.state_to_embed(states)
+
+        # take care of the two scenarios
+        # think it can be done with the same policy, no reason not to
+
+        embed = state_embed
+
+        # if training the low level policy, we now condition on the high level actions
+
+        if is_low_level_policy:
+            high_action_embed = self.higher_action_embed(high_actions)
+
+            embed = einx.add('b t ... d, b t d', embed, high_action_embed)
+        
+        # let the network know if it is acting as low or high level policy
+
+        if is_high_level_policy:
+            embed = embed + self.is_high_level_embed
+            
+        # maybe pack spatial
+
+        embed, inverse_pack_time = pack_with_inverse(embed, 'b * d') # assume time is always closest to batch (b t s d) if spatial dimension exists
+
+        # attention
+
+        attended = self.transformer(embed)
+
+        # maybe pool over spatial
+
+        attended = inverse_pack_time(attended)
+
+        attended = reduce(attended, 'b t ... d -> b t d', 'mean')
+
+        # objectives are different depending on high or low level
+
+        if return_pred_only:
+            targets = None
+        elif is_low_level_policy:
+            targets = actions[:, 1:]
+        elif is_high_level_policy:
+            targets = high_actions[:, 1:]
+
+        if not return_pred_only:
+            attended = attended[:, :-1]
+
+        # maybe loss or prediction
+
+        if is_high_level_policy:
+            readout = self.higher_action_readout
+        elif is_low_level_policy:
+            readout = self.low_action_readout
+
+        return readout(attended, targets = targets)
 
 # classes
 
