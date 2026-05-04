@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 from torch.nn import Module, RMSNorm
 
 from x_transformers import Decoder      # attention
 from h_net_dynamic_chunking import HNet # h-net from Sukjun Hwang et al. https://arxiv.org/abs/2507.07955
 
 from discrete_continuous_embed_readout import EmbedAndReadout
+
+from vector_quantize_pytorch import VectorQuantize
 
 # functions
 
@@ -28,6 +31,7 @@ class HierarchicalLatentActionModel(Module):
         h_net_tail_depth,
         actions_num_discrete = 0,
         actions_num_continuous = 0,
+        num_high_level_discrete = None,
         h_net_target_avg_action_length = 4.,  # action length next level up
         ratio_loss_weight = 3e-2,
         decoder_kwargs: dict = dict(),
@@ -46,11 +50,17 @@ class HierarchicalLatentActionModel(Module):
 
         # define the 3 transformers, head, trunk (working on the compressed skill vectors), tail
 
+        maybe_vq = VectorQuantize(dim = dim, codebook_size = num_high_level_discrete) if exists(num_high_level_discrete) else None
+
+        self.discrete_high_level_actions = exists(num_high_level_discrete)
+        self.num_high_level_discrete = num_high_level_discrete
+
         self.action_chunker = HNet(
             Decoder(dim = dim, depth = h_net_head_depth, pre_norm_has_final_norm = False, **decoder_kwargs),
             Decoder(dim = dim, depth = h_net_trunk_depth, pre_norm_has_final_norm = False, **decoder_kwargs),
             Decoder(dim = dim, depth = h_net_tail_depth, pre_norm_has_final_norm = False, **decoder_kwargs),
             dim = dim,
+            vq = maybe_vq
         )
 
         self.final_norm = RMSNorm(dim)
@@ -70,7 +80,10 @@ class HierarchicalLatentActionModel(Module):
         assert exists(actions) or exists(maybe_idm), 'actions must be given if inverse dynamics model not supplied at init'
 
         if not exists(actions):
-            actions = maybe_idm(states)
+
+            with torch.no_grad():
+                maybe_idm.eval()
+                actions = maybe_idm(states)
 
         # encode actions with embed-readout lib
 
@@ -84,7 +97,11 @@ class HierarchicalLatentActionModel(Module):
 
         if return_actions_only:
 
-            higher_actions = intermediates.input_downsampled_tokens
+            if self.discrete_high_level_actions:
+                higher_actions = intermediates.quantized_downsampled_indices
+            else:
+                higher_actions = intermediates.input_downsampled_tokens
+
             higher_action_lens = intermediates.chunk_lens
 
             return actions, higher_actions, higher_action_lens
