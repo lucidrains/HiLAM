@@ -11,6 +11,10 @@ from discrete_continuous_embed_readout import EmbedAndReadout
 
 from vector_quantize_pytorch import VectorQuantize
 
+import einx
+from einops import rearrange, repeat
+from torch_einops_utils import lens_to_mask, pack_with_inverse, exclusive_cumsum
+
 # functions
 
 def exists(v):
@@ -18,6 +22,65 @@ def exists(v):
 
 def default(v, d):
     return v if exists(v) else d
+
+# tensor related
+
+def batch_repeat_interleave(
+    feats,  # float['b n ...'] | int['b n']
+    lens,   # int['b n']
+):
+    device, dtype = feats.device, feats.dtype
+
+    batch, seq, *dims = feats.shape
+
+    # get mask from lens
+
+    mask = lens_to_mask(lens)
+
+    # derive arange
+
+    window_size = mask.shape[-1]
+    arange = torch.arange(window_size, device = device)
+
+    offsets = exclusive_cumsum(lens)
+    indices = einx.add('w, b n -> b n w', arange, offsets)
+
+    # create output tensor + a sink position on the very right (index max_len)
+
+    total_lens = lens.clamp(min = 0).sum(dim = -1)
+    output_mask = lens_to_mask(total_lens)
+
+    max_len = total_lens.amax()
+
+    output_indices = torch.zeros((batch, max_len + 1), device = device, dtype = torch.long)
+
+    indices = indices.masked_fill(~mask, max_len) # scatter to sink position for padding
+    indices = rearrange(indices, 'b n w -> b (n w)')
+
+    # scatter
+
+    seq_arange = torch.arange(seq, device = device)
+    seq_arange = repeat(seq_arange, 'n -> b (n w)', b = batch, w = window_size)
+
+    output_indices = output_indices.scatter(1, indices, seq_arange)
+
+    # remove sink
+
+    output_indices = output_indices[:, :-1]
+
+    # gather
+
+    feats, unpack_one = pack_with_inverse(feats, 'b n *')
+    output_indices = repeat(output_indices, 'b m -> b m d', d = feats.shape[-1])
+    output = feats.gather(1, output_indices)
+    output = unpack_one(output)
+
+    output = einx.where(
+        'b n, b n ..., -> b n ...',
+        output_mask, output, 0
+    )
+
+    return output
 
 # classes
 
@@ -74,6 +137,7 @@ class HierarchicalLatentActionModel(Module):
         states,
         actions = None,
         return_actions_only = False,
+        return_batch_repeat_interleaved = False,
         return_loss_breakdown = False
     ):
 
@@ -107,6 +171,9 @@ class HierarchicalLatentActionModel(Module):
                 higher_actions = intermediates.input_downsampled_tokens
 
             higher_action_lens = intermediates.chunk_lens
+
+            if return_batch_repeat_interleaved:
+                higher_actions = batch_repeat_interleave(higher_actions, higher_action_lens)
 
             return actions, higher_actions, higher_action_lens
 

@@ -40,3 +40,11 @@ def test_hi_lam(discrete_high_level_actions):
         assert higher_actions.dtype == torch.long
     else:
         assert higher_actions.dtype == torch.float
+
+    # take care of batch repeat interleave, as their successful strategy was to simply condition their policy with each hierarchical action at each timestep
+
+    _, interleaved_higher_actions, _ = hi_lam(states, return_actions_only = True, return_batch_repeat_interleaved = True)
+
+    total_lens = higher_action_lens.clamp(min = 0).sum(dim = -1)
+
+    assert (interleaved_higher_actions.shape[1] == total_lens).all()
