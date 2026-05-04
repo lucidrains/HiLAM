@@ -1,6 +1,6 @@
 [project]
 name = "HiLAM"
-version = "0.0.6"
+version = "0.0.7"
 description = "Implementation of the Hierarchical Latent Action Model"
 authors = [
     { name = "Phil Wang", email = "lucidrains@gmail.com" }
@@ -26,7 +26,7 @@ classifiers=[
 ]
 
 dependencies = [
-    "discrete-continuous-embed-readout>=0.2.6",
+    "discrete-continuous-embed-readout>=0.2.7",
     "einx>=0.3.0",
     "einops>=0.8.1",
     "h-net-dynamic-chunking>=0.4.1",

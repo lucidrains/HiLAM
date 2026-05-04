@@ -128,9 +128,9 @@ class PolicyNetwork(Module):
             (higher_actions_num_discrete > 0 or higher_actions_num_continuous > 0)
         )
 
-        self.low_action_embed, self.low_action_readout = EmbedAndReadout(dim = dim, num_discrete = actions_num_discrete, num_continuous = actions_num_continuous)
+        self.low_action_embed, self.low_action_readout = EmbedAndReadout(dim = dim, num_discrete = actions_num_discrete, num_continuous = actions_num_continuous, regression_loss_type = 'l1')
 
-        self.higher_action_embed, self.higher_action_readout = EmbedAndReadout(dim = dim, num_discrete = higher_actions_num_discrete, num_continuous = higher_actions_num_continuous)
+        self.higher_action_embed, self.higher_action_readout = EmbedAndReadout(dim = dim, num_discrete = higher_actions_num_discrete, num_continuous = higher_actions_num_continuous, regression_loss_type = 'l1')
 
         # is high level embed - give the network a hint which mode it is in
 
@@ -252,7 +252,7 @@ class HierarchicalLatentActionModel(Module):
 
         assert actions_num_discrete > 0 or actions_num_continuous > 0
 
-        self.action_embed, self.action_readout = EmbedAndReadout(dim = dim, num_discrete = actions_num_discrete, num_continuous = actions_num_continuous)
+        self.action_embed, self.action_readout = EmbedAndReadout(dim = dim, num_discrete = actions_num_discrete, num_continuous = actions_num_continuous, regression_loss_type = 'l1')
 
         # define the 3 transformers, head, trunk (working on the compressed skill vectors), tail
 
