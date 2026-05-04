@@ -33,10 +33,11 @@ class HierarchicalLatentActionModel(Module):
         actions_num_continuous = 0,
         num_high_level_discrete = None,
         h_net_target_avg_action_length = 4.,  # action length next level up
-        ratio_loss_weight = 3e-2,
-        decoder_kwargs: dict = dict(),
-        hnet_kwargs: dict = dict(),
+        h_net_ratio_loss_weight = 3e-2,
         inverse_dynamics_model: Module | None = None,
+        decoder_kwargs: dict = dict(),
+        h_net_kwargs: dict = dict(),
+        vq_kwargs: dict = dict(),
     ):
         super().__init__()
 
@@ -50,7 +51,7 @@ class HierarchicalLatentActionModel(Module):
 
         # define the 3 transformers, head, trunk (working on the compressed skill vectors), tail
 
-        maybe_vq = VectorQuantize(dim = dim, codebook_size = num_high_level_discrete) if exists(num_high_level_discrete) else None
+        maybe_vq = VectorQuantize(dim = dim, codebook_size = num_high_level_discrete, **vq_kwargs) if exists(num_high_level_discrete) else None
 
         self.discrete_high_level_actions = exists(num_high_level_discrete)
         self.num_high_level_discrete = num_high_level_discrete
@@ -60,7 +61,10 @@ class HierarchicalLatentActionModel(Module):
             Decoder(dim = dim, depth = h_net_trunk_depth, pre_norm_has_final_norm = False, **decoder_kwargs),
             Decoder(dim = dim, depth = h_net_tail_depth, pre_norm_has_final_norm = False, **decoder_kwargs),
             dim = dim,
-            vq = maybe_vq
+            vq = maybe_vq,
+            target_avg_token_length = h_net_target_avg_action_length,
+            ratio_loss_weight = h_net_ratio_loss_weight,
+            **h_net_kwargs
         )
 
         self.final_norm = RMSNorm(dim)
