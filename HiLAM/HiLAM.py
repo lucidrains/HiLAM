@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from torch.nn import Module
+from torch.nn import Module, RMSNorm
 
 from x_transformers import Decoder      # attention
 from h_net_dynamic_chunking import HNet # h-net from Sukjun Hwang et al. https://arxiv.org/abs/2507.07955
@@ -47,11 +47,13 @@ class HierarchicalLatentActionModel(Module):
         # define the 3 transformers, head, trunk (working on the compressed skill vectors), tail
 
         self.action_chunker = HNet(
-            Decoder(dim = dim, depth = h_net_head_depth, **decoder_kwargs),
-            Decoder(dim = dim, depth = h_net_trunk_depth, **decoder_kwargs),
-            Decoder(dim = dim, depth = h_net_tail_depth, **decoder_kwargs),
+            Decoder(dim = dim, depth = h_net_head_depth, pre_norm_has_final_norm = False, **decoder_kwargs),
+            Decoder(dim = dim, depth = h_net_trunk_depth, pre_norm_has_final_norm = False, **decoder_kwargs),
+            Decoder(dim = dim, depth = h_net_tail_depth, pre_norm_has_final_norm = False, **decoder_kwargs),
             dim = dim,
         )
+
+        self.final_norm = RMSNorm(dim)
 
     def forward(
         self,
@@ -88,6 +90,8 @@ class HierarchicalLatentActionModel(Module):
             return actions, higher_actions, higher_action_lens
 
         # reconstruction loss with behavior clone / autoregressive on actions (todo - states should be optionally included)
+
+        attended = self.final_norm(attended)
 
         action_recon_loss = self.action_readout(attended[:, :-1], targets = actions[:, 1:], return_loss = True)
 
