@@ -4,9 +4,14 @@ param = pytest.mark.parametrize
 import torch
 from torch.nn import Module
 
+@param('accept_text', (False, True))
 @param('discrete_high_level_actions', (False, True))
 @param('has_space_time_attend', (False, True))
-def test_hi_lam(discrete_high_level_actions, has_space_time_attend):
+def test_hi_lam(
+    accept_text,
+    discrete_high_level_actions,
+    has_space_time_attend
+):
     from HiLAM.HiLAM import HierarchicalLatentActionModel
 
     class MockIDM(Module):
@@ -30,22 +35,30 @@ def test_hi_lam(discrete_high_level_actions, has_space_time_attend):
         num_high_level_discrete = 1024 if discrete_high_level_actions else None,
         inverse_dynamics_model = MockIDM(20),
         state_action_attend = has_space_time_attend,
-        video_image_size = img_size if has_space_time_attend else None,
-        video_patch_size = patch_size if has_space_time_attend else None,
+        video_image_size = img_size,
+        video_patch_size = patch_size,
+        accept_text_embed = accept_text,
         state_action_space_time_attend_kwargs = dict(
             depth = 2,
             heads = 4,
-        ) if has_space_time_attend else dict()
+        )
     )
 
     states = torch.randn(2, 10, 3, img_size, img_size) # video 64x64
 
-    loss = hi_lam(states)
+    text_kwargs = dict()
+    if accept_text:
+        text_kwargs = dict(
+            text_embed = torch.randn(2, 8, 512),
+            text_mask = torch.randint(0, 2, (2, 8)).bool()
+        )
+
+    loss = hi_lam(states, **text_kwargs)
     loss.backward()
 
     # after much training, you have access to the actions as well as the learnt higher level actions and their lengths
 
-    lower_actions, higher_actions, higher_action_lens = hi_lam(states, return_actions_only = True)
+    lower_actions, higher_actions, higher_action_lens = hi_lam(states, return_actions_only = True, **text_kwargs)
 
     if discrete_high_level_actions:
         assert higher_actions.dtype == torch.long
@@ -54,7 +67,7 @@ def test_hi_lam(discrete_high_level_actions, has_space_time_attend):
 
     # take care of batch repeat interleave, as their successful strategy was to simply condition their policy with each hierarchical action at each timestep
 
-    _, interleaved_higher_actions, _ = hi_lam(states, return_actions_only = True, return_batch_repeat_interleaved = True)
+    _, interleaved_higher_actions, _ = hi_lam(states, return_actions_only = True, return_batch_repeat_interleaved = True, **text_kwargs)
 
     total_lens = higher_action_lens.clamp(min = 0).sum(dim = -1)
 

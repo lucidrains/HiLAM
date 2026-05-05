@@ -6,7 +6,7 @@ from torch.nn import Module, ModuleList, RMSNorm
 
 # attention
 
-from x_transformers import Decoder
+from x_transformers import Decoder, CrossAttender
 from x_transformers.x_transformers import Attention, FeedForward
 
 # h-net from Sukjun Hwang et al. https://arxiv.org/abs/2507.07955
@@ -323,6 +323,8 @@ class HierarchicalLatentActionModel(Module):
         decoder_kwargs: dict = dict(),
         h_net_kwargs: dict = dict(),
         vq_kwargs: dict = dict(),
+        accept_text_embed = False,
+        dim_text_embed = None
     ):
         super().__init__()
 
@@ -337,6 +339,15 @@ class HierarchicalLatentActionModel(Module):
         # factorized space time attention on video patches + action tokens
 
         self.has_state_action_space_time_attend = state_action_attend
+
+        self.accept_text_embed = accept_text_embed
+
+        if self.accept_text_embed:
+            self.text_cross_attender = CrossAttender(
+                dim = dim,
+                depth = 2,
+                attn_dim_context = default(dim_text_embed, dim)
+            )
 
         if self.has_state_action_space_time_attend:
             assert exists(video_image_size) and exists(video_patch_size), 'both video_image_size and video_patch_size must be given to use state action space time attention'
@@ -375,7 +386,9 @@ class HierarchicalLatentActionModel(Module):
         actions = None,
         return_actions_only = False,
         return_batch_repeat_interleaved = False,
-        return_loss_breakdown = False
+        return_loss_breakdown = False,
+        text_embed = None,
+        text_mask = None
     ):
 
         # if actions not given and idm given at init, derive actions from state
@@ -393,6 +406,14 @@ class HierarchicalLatentActionModel(Module):
         # encode actions with embed-readout lib
 
         action_embed = self.action_embed(actions)
+
+        # maybe cross attend to text before space time attend
+
+        if exists(text_embed):
+            assert self.accept_text_embed, '`accept_text_embed` must be set to True to accept text conditioning'
+            action_embed, inverse_pack_time = pack_with_inverse(action_embed, 'b * d')
+            action_embed = self.text_cross_attender(action_embed, context = text_embed, context_mask = text_mask)
+            action_embed = inverse_pack_time(action_embed)
 
         # maybe factorized space time attention on video patches + action tokens
 
