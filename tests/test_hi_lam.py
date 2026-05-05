@@ -49,7 +49,9 @@ def test_hi_lam(discrete_high_level_actions):
 
     assert (interleaved_higher_actions.shape[1] == total_lens).all()
 
-def test_policy_e2e():
+@param('accept_text', (False, True))
+def test_policy_e2e(accept_text):
+
     from HiLAM.HiLAM import (
         HierarchicalLatentActionModel,
         PolicyNetwork,
@@ -86,10 +88,11 @@ def test_policy_e2e():
 
     policy = PolicyNetwork(
         dim = dim,
-        transformer = Decoder(dim = dim, depth = 2, heads = 4),
+        transformer = dict(dim = dim, depth = 2, heads = 4),
         state_to_embed = state_to_embed,
         actions_num_discrete = num_discrete_actions,
         higher_actions_num_discrete = num_high_level_discrete,
+        accept_text_embed = accept_text
     )
 
     # mock data
@@ -103,17 +106,27 @@ def test_policy_e2e():
         states,
         actions = actions,
         return_actions_only = True,
-        return_batch_repeat_interleaved = True
+        return_batch_repeat_interleaved = True,
     )
+
+    # text
+
+    text_kwargs = dict()
+
+    if accept_text:
+        text_embed = torch.randn(2, 8, dim)
+        text_mask = torch.randint(0, 2, (2, 8)).bool()
+
+        text_kwargs = dict(text_embed = text_embed, text_mask = text_mask)
 
     # 2. train high level policy - predict higher actions from states
 
-    high_loss = policy(states, high_actions = interleaved_higher_actions)
+    high_loss = policy(states, high_actions = interleaved_higher_actions, **text_kwargs)
     high_loss.backward()
 
     # 3. train low level policy - predict actions conditioned on higher actions
 
-    low_loss = policy(states, actions = actions, high_actions = interleaved_higher_actions)
+    low_loss = policy(states, actions = actions, high_actions = interleaved_higher_actions, **text_kwargs)
     low_loss.backward()
 
     # 4. inference - first predict high level, then low level
@@ -124,11 +137,11 @@ def test_policy_e2e():
 
         # predict high level actions from states alone
 
-        high_logits = policy(states, high_actions = interleaved_higher_actions, return_pred_only = True)
+        high_logits = policy(states, high_actions = interleaved_higher_actions, return_pred_only = True, **text_kwargs)
 
         # predict low level actions conditioned on predicted high level
 
-        low_logits = policy(states, actions = actions, high_actions = interleaved_higher_actions, return_pred_only = True)
+        low_logits = policy(states, actions = actions, high_actions = interleaved_higher_actions, return_pred_only = True, **text_kwargs)
 
     assert high_logits.shape[:2] == (2, 16)
     assert low_logits.shape[:2] == (2, 16)

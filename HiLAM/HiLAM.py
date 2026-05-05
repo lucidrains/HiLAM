@@ -104,12 +104,14 @@ class PolicyNetwork(Module):
         self,
         dim,
         *,
-        transformer: Decoder,
+        transformer: Decoder | dict,
         state_to_embed: Module,
         actions_num_discrete = 0,
         actions_num_continuous = 0,
         higher_actions_num_discrete = 0,
         higher_actions_num_continuous = 0,
+        accept_text_embed = False,
+        dim_text_embed = None
     ):
         super().__init__()
 
@@ -117,7 +119,12 @@ class PolicyNetwork(Module):
 
         self.state_to_embed = state_to_embed
 
-        # attention
+        # transformer
+
+        if isinstance(transformer, dict):
+            text_cond_kwargs = dict(cross_attend = True, attn_dim_context = default(dim_text_embed, dim)) if accept_text_embed else dict()
+
+            transformer = Decoder(**{**transformer, **text_cond_kwargs})
 
         self.transformer = transformer
 
@@ -137,12 +144,18 @@ class PolicyNetwork(Module):
         self.start_action_embed = nn.Parameter(torch.randn(dim) * 1e-2)
         self.is_high_level_embed = nn.Parameter(torch.randn(dim) * 1e-2)
 
+        # whether to accept text embedding, cross attended to
+
+        self.accept_text_embed = accept_text_embed
+
     def forward(
         self,
         states,
         actions = None,
         high_actions = None,
-        return_pred_only = False
+        return_pred_only = False,
+        text_embed = None,
+        text_mask = None
     ):
         batch, seq_len = states.shape[:2]
 
@@ -193,9 +206,21 @@ class PolicyNetwork(Module):
 
         embed, inverse_pack_time = pack_with_inverse(embed, 'b * d') # assume time is always closest to batch (b t s d) if spatial dimension exists
 
+        # maybe cross attention to language commands
+
+        assert not (exists(text_embed) and not self.accept_text_embed), '`accept_text_embed` should be set to True for PolicyNetwork if sending text conditioning'
+
+        transformer_forward_kwargs = dict()
+
+        if exists(text_embed):
+            transformer_forward_kwargs = dict(
+                context = text_embed,
+                context_mask = text_mask
+            )
+
         # attention
 
-        attended = self.transformer(embed)
+        attended = self.transformer(embed, **transformer_forward_kwargs)
 
         # maybe pool over spatial
 
