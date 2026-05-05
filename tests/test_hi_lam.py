@@ -5,7 +5,8 @@ import torch
 from torch.nn import Module
 
 @param('discrete_high_level_actions', (False, True))
-def test_hi_lam(discrete_high_level_actions):
+@param('has_space_time_attend', (False, True))
+def test_hi_lam(discrete_high_level_actions, has_space_time_attend):
     from HiLAM.HiLAM import HierarchicalLatentActionModel
 
     class MockIDM(Module):
@@ -17,6 +18,9 @@ def test_hi_lam(discrete_high_level_actions):
             batch, time, device = *states.shape[:2], states.device
             return torch.randn((batch, time, self.dim_action))
 
+    img_size = 64
+    patch_size = 16
+
     hi_lam = HierarchicalLatentActionModel(
         dim = 512,
         h_net_head_depth = 2,
@@ -24,10 +28,17 @@ def test_hi_lam(discrete_high_level_actions):
         h_net_tail_depth = 2,
         actions_num_continuous = 20,
         num_high_level_discrete = 1024 if discrete_high_level_actions else None,
-        inverse_dynamics_model = MockIDM(20)
+        inverse_dynamics_model = MockIDM(20),
+        state_action_attend = has_space_time_attend,
+        video_image_size = img_size if has_space_time_attend else None,
+        video_patch_size = patch_size if has_space_time_attend else None,
+        state_action_space_time_attend_kwargs = dict(
+            depth = 2,
+            heads = 4,
+        ) if has_space_time_attend else dict()
     )
 
-    states = torch.randn(2, 10, 3, 64, 64) # video 64x64
+    states = torch.randn(2, 10, 3, img_size, img_size) # video 64x64
 
     loss = hi_lam(states)
     loss.backward()
@@ -55,7 +66,7 @@ def test_policy_e2e(accept_text):
     from HiLAM.HiLAM import (
         HierarchicalLatentActionModel,
         PolicyNetwork,
-        VideoToPatchTokens
+        VideoToPatchEmbed
     )
     from x_transformers import Decoder
 
@@ -67,7 +78,7 @@ def test_policy_e2e(accept_text):
 
     # patchify video frames
 
-    state_to_embed = VideoToPatchTokens(
+    state_to_embed = VideoToPatchEmbed(
         dim = dim,
         patch_size = patch_size,
         channels = 3
@@ -82,6 +93,7 @@ def test_policy_e2e(accept_text):
         h_net_tail_depth = 1,
         actions_num_discrete = num_discrete_actions,
         num_high_level_discrete = num_high_level_discrete,
+        state_action_attend = False,
     )
 
     # policy that acts at both levels

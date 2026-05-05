@@ -2,20 +2,26 @@ from __future__ import annotations
 
 import torch
 from torch import nn, cat
-import torch.nn.functional as F
-from torch.nn import Module, RMSNorm
+from torch.nn import Module, ModuleList, RMSNorm
 
-from x_transformers import Decoder      # attention
-from h_net_dynamic_chunking import HNet # h-net from Sukjun Hwang et al. https://arxiv.org/abs/2507.07955
+# attention
 
-from discrete_continuous_embed_readout import EmbedAndReadout
+from x_transformers import Decoder
+from x_transformers.x_transformers import Attention, FeedForward
 
-from vector_quantize_pytorch import VectorQuantize
+# h-net from Sukjun Hwang et al. https://arxiv.org/abs/2507.07955
+
+from h_net_dynamic_chunking import HNet
+
+# einstein equations
 
 import einx
 from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange
 from torch_einops_utils import lens_to_mask, pack_with_inverse, exclusive_cumsum
+
+from discrete_continuous_embed_readout import EmbedAndReadout
+from vector_quantize_pytorch import VectorQuantize
 
 # functions
 
@@ -89,13 +95,57 @@ def batch_repeat_interleave(
 
 # video to patches
 
-def VideoToPatchTokens(dim, patch_size, channels = 3):
+def VideoToPatchEmbed(dim, patch_size, channels = 3):
     patch_dim = channels * patch_size ** 2
 
     return nn.Sequential(
         Rearrange('b t c (h p1) (w p2) -> b t (h w) (c p1 p2)', p1 = patch_size, p2 = patch_size),
         nn.Linear(patch_dim, dim)
     )
+
+# factorized space time attention
+
+class FactorizedSpaceTimeAttention(Module):
+    def __init__(
+        self,
+        dim,
+        depth = 2,
+        heads = 8,
+        dim_head = 64,
+        ff_mult = 4,
+        dropout = 0.
+    ):
+        super().__init__()
+
+        self.layers = ModuleList([])
+
+        for _ in range(depth):
+            self.layers.append(ModuleList([
+                RMSNorm(dim),
+                Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = dropout),
+                RMSNorm(dim),
+                Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = dropout, causal = True),
+                RMSNorm(dim),
+                FeedForward(dim = dim, mult = ff_mult, dropout = dropout)
+            ]))
+
+        self.norm = RMSNorm(dim)
+
+    def forward(
+        self,
+        x   # Float['batch time space dim']
+    ):
+        batch, time, space, _ = x.shape
+
+        for spatial_norm, spatial_attn, temporal_norm, temporal_attn, ff_norm, ff in self.layers:
+            x = rearrange(x, 'b t s d -> (b t) s d')
+            x = spatial_attn(spatial_norm(x)) + x
+            x = rearrange(x, '(b t) s d -> (b s) t d', b = batch, t = time)
+            x = temporal_attn(temporal_norm(x)) + x
+            x = ff(ff_norm(x)) + x
+            x = rearrange(x, '(b s) t d -> b t s d', b = batch, s = space)
+
+        return self.norm(x)
 
 # policy network
 
@@ -265,6 +315,11 @@ class HierarchicalLatentActionModel(Module):
         h_net_target_avg_action_length = 4.,  # action length next level up
         h_net_ratio_loss_weight = 3e-2,
         inverse_dynamics_model: Module | None = None,
+        video_image_size: int | None = None,
+        video_patch_size: int | None = None,
+        video_channels = 3,
+        state_action_attend = True,
+        state_action_space_time_attend_kwargs: dict = dict(),
         decoder_kwargs: dict = dict(),
         h_net_kwargs: dict = dict(),
         vq_kwargs: dict = dict(),
@@ -278,6 +333,21 @@ class HierarchicalLatentActionModel(Module):
         assert actions_num_discrete > 0 or actions_num_continuous > 0
 
         self.action_embed, self.action_readout = EmbedAndReadout(dim = dim, num_discrete = actions_num_discrete, num_continuous = actions_num_continuous, regression_loss_type = 'l1')
+
+        # factorized space time attention on video patches + action tokens
+
+        self.has_state_action_space_time_attend = state_action_attend
+
+        if self.has_state_action_space_time_attend:
+            assert exists(video_image_size) and exists(video_patch_size), 'both video_image_size and video_patch_size must be given to use state action space time attention'
+            assert divisible_by(video_image_size, video_patch_size), 'image size must be divisible by patch size'
+
+            self.video_to_patch_embed = VideoToPatchEmbed(dim, video_patch_size, channels = video_channels)
+
+            self.state_action_space_time_attend = FactorizedSpaceTimeAttention(
+                dim = dim,
+                **state_action_space_time_attend_kwargs
+            )
 
         # define the 3 transformers, head, trunk (working on the compressed skill vectors), tail
 
@@ -323,6 +393,23 @@ class HierarchicalLatentActionModel(Module):
         # encode actions with embed-readout lib
 
         action_embed = self.action_embed(actions)
+
+        # maybe factorized space time attention on video patches + action tokens
+
+        if self.has_state_action_space_time_attend:
+            space_tokens = self.video_to_patch_embed(states)
+
+            # pack space and action tokens - space on the left, actions on the right
+
+            packed, inverse_pack_space = pack_with_inverse([space_tokens, action_embed], 'b t * d')
+
+            # factorized space time attend
+
+            packed = self.state_action_space_time_attend(packed)
+
+            # splice off action tokens (rightmost position)
+
+            _, action_embed = inverse_pack_space(packed)
 
         # attention, with temporal compression with h-net
 
