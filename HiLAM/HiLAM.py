@@ -434,7 +434,8 @@ class HierarchicalLatentActionModel(Module):
 
         # attention, with temporal compression with h-net
 
-        attended, ratio_loss, intermediates = self.action_chunker(action_embed, return_intermediates = True)
+        hnet_return = self.action_chunker(action_embed, return_intermediates = True)
+        attended, ratio_loss, intermediates = hnet_return.output, hnet_return.loss, hnet_return.intermediates
 
         # maybe early return
 
